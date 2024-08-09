@@ -1,0 +1,51 @@
+name: Release Unipept Index Feature
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  package-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Create tarball
+        run: |
+          mkdir -p release
+          tar -czf release/unipept-index.tar.gz -C unipept-index .
+
+      - name: Get current version
+        id: version
+        run: |
+          # Extract the current version from the feature's devcontainer-feature.json
+          version=$(jq -r '.version' < unipept-index/devcontainer-feature.json)
+          echo "version=$version" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: v${{ env.version }}
+          release_name: Release ${{ env.version }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: release/unipept-index.tar.gz
+          asset_name: unipept-index-${{ env.version }}.tar.gz
+          asset_content_type: application/gzip
