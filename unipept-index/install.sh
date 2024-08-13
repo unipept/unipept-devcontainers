@@ -170,8 +170,8 @@ initialize_datastore() {
     # Download sample data JSON-file (required for the API)
     wget -q "https://raw.githubusercontent.com/unipept/unipept-database/master/schemas_suffix_array/sampledata.json" -O "$FEATURE_DIR/datastore/sampledata.json"
 
-    # Keep track of the current database version inside of the `.version` file
-    echo ""
+    # Rename the index file
+    mv "$FEATURE_DIR/sa_sparse3_compressed.bin" "$FEATURE_DIR/sa.bin"
 }
 
 # Start the setup process
