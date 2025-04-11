@@ -91,7 +91,7 @@ download_version() {
         # First, download the zip file containing the index files
         download_and_extract "$latest_version_date" "index_SP_${latest_version_date}.zip" "$GITHUB_API_INDEX"
         # Then, download the zip file containing the database files
-        download_and_extract "$latest_version_date" "suffix-array.zip" "$GITHUB_API_DATABASE"
+        download_and_extract "$latest_version_date" "suffix_array.zip" "$GITHUB_API_DATABASE"
         echo "Successfully downloaded and extracted the latest version: $latest_version_date"
     else
         # Attempt to download the specified version
@@ -100,48 +100,46 @@ download_version() {
             list_last_10_releases
             exit 1
         }
-        download_and_extract "$VERSION_OPTION" "suffix-array.zip" "$GITHUB_API_DATABASE"
+        download_and_extract "$VERSION_OPTION" "suffix_array.zip" "$GITHUB_API_DATABASE"
         echo "Successfully downloaded and extracted version: $VERSION_OPTION"
     fi
 }
 
-DB_TMP_DIR="~/db_schemas/"
+REPO_TMP_DIR="/tmp"
 DB_USER="root"
-DB_PASSWORD="root_pass"
+DB_PASSWORD="UNIpept2025"
 
 # We also need to install and setup a small MySQL database that requires the UniProt-entries to be loaded in before-
 # hand. There's will be used by the Unipept API to retrieve functional annotations and other metadata.
 setup_database() {
-    echo "Started constructing database..."
+    echo "Started setting up OpenSearch..."
 
-    # First, download the database schemas that are required for the suffix array
-    mkdir -p "$DB_TMP_DIR"
+    # First, download the unipept-database repository
+    rm -rf "${REPO_TMP_DIR}/unipept-database"
+    git clone -b "feature/opensearch-proteins" --single-branch https://github.com/unipept/unipept-database.git "${REPO_TMP_DIR}/unipept-database"
 
-    # Download the database schema
-    wget -q "https://raw.githubusercontent.com/unipept/unipept-database/master/schemas_suffix_array/structure_no_index.sql" -O "$DB_TMP_DIR/structure_no_index.sql"
-    # Download an SQL-file that starts building indices for the database
-    wget -q "https://raw.githubusercontent.com/unipept/unipept-database/master/schemas_suffix_array/structure_index_only.sql" -O "$DB_TMP_DIR/structure_index_only.sql"
+    # Install opensearch from apt without user interaction
+    sudo apt-get update && sudo apt-get -y install lsb-release ca-certificates curl gnupg2 lz4 jq python3-requests pv
+    curl -o- https://artifacts.opensearch.org/publickeys/opensearch.pgp | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/opensearch-keyring
+    echo "deb [signed-by=/usr/share/keyrings/opensearch-keyring] https://artifacts.opensearch.org/releases/bundle/opensearch/2.x/apt stable main" | sudo tee /etc/apt/sources.list.d/opensearch-2.x.list
+    sudo apt-get update
+    sudo env OPENSEARCH_INITIAL_ADMIN_PASSWORD="$DB_PASSWORD" apt-get install -y opensearch
 
-    # Install mariadb-server from apt without user interaction
-    export DEBIAN_FRONTEND="noninteractive"
-    sudo debconf-set-selections <<< "mariadb-server mysql-server/root_password password $DB_PASSWORD"
-    sudo debconf-set-selections <<< "mariadb-server mysql-server/root_password_again password $DB_PASSWORD"
+    # Add configuration to OpenSearch configuration file
+    echo -e "\ndiscovery.type: single-node\nnetwork.host: 127.0.0.1\nplugins.security.disabled: true\n" >> /etc/opensearch/opensearch.yml
 
-    apt update && apt install -y lz4 mariadb-server
+    sudo chown -R vscode:vscode /etc/opensearch /var/lib/opensearch /usr/share/opensearch /var/log/opensearch
 
-    # Start MariaDB service
-    service mariadb start
+    # Start OpenSearch as the default user to fill it with data further on
+    sudo -u vscode /usr/share/opensearch/bin/opensearch &
 
-    # Import the SQL files into the database
-    mysql -uroot -p"$DB_PASSWORD" < "$DB_TMP_DIR/structure_no_index.sql"
+    # Wait until OpenSearch has fully started
+    timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
 
-    # Load the UniProt-entries into the database
-    lz4 -dcfm "$FEATURE_DIR/uniprot_entries.tsv.lz4" | mariadb  --local-infile=1 -uroot -p"$DB_PASSWORD" unipept -e "LOAD DATA LOCAL INFILE '/dev/stdin' INTO TABLE uniprot_entries;SHOW WARNINGS" 2>&1
+    # Start filling it with data by executing the script we've downloaded in the unipept-database repo
+    "${REPO_TMP_DIR}/unipept-database/scripts/initialize_opensearch.sh" --uniprot-entries "$FEATURE_DIR/uniprot_entries.tsv.lz4"
 
-    # Build the database indices
-    mysql -uroot -p"$DB_PASSWORD" unipept < "$DB_TMP_DIR/structure_index_only.sql"
-
-    echo "Constructing database finished..."
+    echo "Finished setting up OpenSearch..."
 }
 
 # Correctly move and extract the files required for the datastore used by the Unipept API.
