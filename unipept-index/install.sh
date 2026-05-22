@@ -138,8 +138,25 @@ setup_database() {
     # Wait until OpenSearch has fully started
     timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
 
+    # Verify the UniProt entries file exists and is non-empty before starting the upload
+    if [[ ! -f "$FEATURE_DIR/uniprot_entries.tsv.lz4" ]]; then
+        error_exit "UniProt entries file not found: $FEATURE_DIR/uniprot_entries.tsv.lz4"
+    fi
+    if [[ ! -s "$FEATURE_DIR/uniprot_entries.tsv.lz4" ]]; then
+        error_exit "UniProt entries file is empty: $FEATURE_DIR/uniprot_entries.tsv.lz4"
+    fi
+    echo "UniProt entries file size: $(du -sh "$FEATURE_DIR/uniprot_entries.tsv.lz4" | cut -f1)"
+
     # Load data by executing the script from the unipept-database repo
     "${REPO_TMP_DIR}/unipept-database/scripts/initialize_opensearch.sh" --uniprot-entries "$FEATURE_DIR/uniprot_entries.tsv.lz4"
+
+    # Flush buffered writes and report the number of indexed proteins
+    curl -s -X POST "http://localhost:9200/uniprot_entries/_refresh" > /dev/null
+    protein_count=$(curl -s "http://localhost:9200/uniprot_entries/_count" | jq '.count')
+    echo "Indexed protein count in OpenSearch: $protein_count"
+    if [[ "$protein_count" -eq 0 ]]; then
+        error_exit "No proteins were indexed. The upload likely failed silently."
+    fi
 
     # Gracefully stop OpenSearch now that data loading is complete
     echo "Stopping OpenSearch after data load..."
@@ -153,7 +170,8 @@ setup_database() {
 set -euo pipefail
 CONTAINER_USER="${_REMOTE_USER:-vscode}"
 echo "Starting OpenSearch..."
-sudo -u "$CONTAINER_USER" /usr/share/opensearch/bin/opensearch > /var/log/opensearch/startup.log 2>&1 &
+sudo -u "$CONTAINER_USER" nohup /usr/share/opensearch/bin/opensearch > /var/log/opensearch/startup.log 2>&1 &
+disown
 timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
 echo "OpenSearch is ready."
 EOF
