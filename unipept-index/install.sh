@@ -211,7 +211,7 @@ initialize_datastore() {
     mv "$FEATURE_DIR/sa_sparse3_compressed.bin" "$FEATURE_DIR/sa.bin"
 
     # Verify that the new binary files produced by sa-builder are present
-    for bin_file in proteins.bin mappings.bin; do
+    for bin_file in proteins.bin mapping.bin; do
         if [[ ! -f "$FEATURE_DIR/$bin_file" ]]; then
             error_exit "Expected binary file not found: $FEATURE_DIR/$bin_file"
         fi
