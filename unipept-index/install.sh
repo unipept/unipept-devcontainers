@@ -69,8 +69,6 @@ download_and_extract() {
         error_exit "Failed to remove $zip_file after extraction."
     fi
 
-    # Store the version in the .VERSION file
-    echo "$version" > "$FEATURE_DIR/.VERSION" || error_exit "Failed to write version to .VERSION file."
 }
 
 # Function to list the last 10 releases
@@ -92,6 +90,7 @@ download_version() {
         download_and_extract "$latest_version_date" "index_SP_${latest_version_date}.zip" "$GITHUB_API_INDEX"
         # Then, download the zip file containing the database files
         download_and_extract "$latest_version_date" "suffix_array.zip" "$GITHUB_API_DATABASE"
+        echo "$latest_version_date" > "$FEATURE_DIR/.VERSION" || error_exit "Failed to write version to .VERSION file."
         echo "Successfully downloaded and extracted the latest version: $latest_version_date"
     else
         # Attempt to download the specified version
@@ -101,16 +100,17 @@ download_version() {
             exit 1
         }
         download_and_extract "$VERSION_OPTION" "suffix_array.zip" "$GITHUB_API_DATABASE"
+        echo "$VERSION_OPTION" > "$FEATURE_DIR/.VERSION" || error_exit "Failed to write version to .VERSION file."
         echo "Successfully downloaded and extracted version: $VERSION_OPTION"
     fi
 }
 
 REPO_TMP_DIR="/tmp"
-DB_USER="root"
 DB_PASSWORD="UNIpept2025"
+CONTAINER_USER="${_REMOTE_USER:-vscode}"
 
-# We also need to install and setup a small MySQL database that requires the UniProt-entries to be loaded in before-
-# hand. There's will be used by the Unipept API to retrieve functional annotations and other metadata.
+# We also need to install and setup a small OpenSearch database that requires the UniProt-entries to be loaded in before-
+# hand. This will be used by the Unipept API to retrieve functional annotations and other metadata.
 setup_database() {
     echo "Started setting up OpenSearch..."
 
@@ -128,18 +128,37 @@ setup_database() {
     # Add configuration to OpenSearch configuration file
     echo -e "\ndiscovery.type: single-node\nnetwork.host: 127.0.0.1\nplugins.security.disabled: true\n" >> /etc/opensearch/opensearch.yml
 
-    sudo chown -R vscode:vscode /etc/opensearch /var/lib/opensearch /usr/share/opensearch /var/log/opensearch
+    sudo chown -R "$CONTAINER_USER:$CONTAINER_USER" /etc/opensearch /var/lib/opensearch /usr/share/opensearch /var/log/opensearch
 
-    # Start OpenSearch as the default user to fill it with data further on
-    sudo -u vscode /usr/share/opensearch/bin/opensearch &
+    # Start OpenSearch temporarily to load data
+    sudo -u "$CONTAINER_USER" /usr/share/opensearch/bin/opensearch &
+    OPENSEARCH_PID=$!
 
     # Wait until OpenSearch has fully started
     timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
 
-    # Start filling it with data by executing the script we've downloaded in the unipept-database repo
+    # Load data by executing the script from the unipept-database repo
     "${REPO_TMP_DIR}/unipept-database/scripts/initialize_opensearch.sh" --uniprot-entries "$FEATURE_DIR/uniprot_entries.tsv.lz4"
 
-    echo "Finished setting up OpenSearch..."
+    # Gracefully stop OpenSearch now that data loading is complete
+    echo "Stopping OpenSearch after data load..."
+    kill "$OPENSEARCH_PID" || true
+    timeout 30s bash -c "while kill -0 $OPENSEARCH_PID 2>/dev/null; do sleep 2; done" || true
+    echo "OpenSearch stopped."
+
+    # Install a startup script so consuming devcontainers can bring OpenSearch up on each container start
+    cat > /usr/local/bin/unipept-start-services.sh << 'EOF'
+#!/bin/bash
+set -euo pipefail
+CONTAINER_USER="${_REMOTE_USER:-vscode}"
+echo "Starting OpenSearch..."
+sudo -u "$CONTAINER_USER" /usr/share/opensearch/bin/opensearch > /var/log/opensearch/startup.log 2>&1 &
+timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
+echo "OpenSearch is ready."
+EOF
+    chmod +x /usr/local/bin/unipept-start-services.sh
+
+    echo "Finished setting up OpenSearch."
 }
 
 # Correctly move and extract the files required for the datastore used by the Unipept API.
@@ -166,10 +185,18 @@ initialize_datastore() {
     done
 
     # Download sample data JSON-file (required for the API)
-    wget -q "https://raw.githubusercontent.com/unipept/unipept-database/master/schemas_suffix_array/sampledata.json" -O "$FEATURE_DIR/datastore/sampledata.json"
+    curl -fsSL "https://raw.githubusercontent.com/unipept/unipept-database/master/schemas_suffix_array/sampledata.json" -o "$FEATURE_DIR/datastore/sampledata.json"
 
     # Rename the index file
     mv "$FEATURE_DIR/sa_sparse3_compressed.bin" "$FEATURE_DIR/sa.bin"
+
+    # Verify that the new binary files produced by sa-builder are present
+    for bin_file in proteins.bin mappings.bin; do
+        if [[ ! -f "$FEATURE_DIR/$bin_file" ]]; then
+            error_exit "Expected binary file not found: $FEATURE_DIR/$bin_file"
+        fi
+        echo "Found $bin_file at $FEATURE_DIR/$bin_file"
+    done
 }
 
 # Start the setup process
