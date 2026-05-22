@@ -36,7 +36,8 @@ download_and_extract() {
     local zip_file
 
     # Get the release URL for the specific ZIP file
-    release_url=$(curl -s "$github_url" | jq -r --arg zip_name "$zip_file_name" --arg date "$version" '.[] | .assets[] | select(.created_at | contains($date)) | select(.name == $zip_name) | .browser_download_url')
+    release_url=$(curl -s "$github_url" | jq -r --arg zip_name "$zip_file_name" --arg date "$version" \
+        '[.[] | select(.tag_name | contains($date)) | .assets[] | select(.name == $zip_name) | .browser_download_url] | first // empty')
 
     # Check if release URL is found
     if [ -z "$release_url" ]; then
