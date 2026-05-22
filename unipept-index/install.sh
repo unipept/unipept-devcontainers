@@ -168,9 +168,10 @@ setup_database() {
     cat > /usr/local/bin/unipept-start-services.sh << 'EOF'
 #!/bin/bash
 set -euo pipefail
-CONTAINER_USER="${_REMOTE_USER:-vscode}"
+echo "Removing stale OpenSearch lock files..."
+sudo rm -f /var/lib/opensearch/nodes/0/node.lock /var/lib/opensearch/nodes/0/_state/write.lock
 echo "Starting OpenSearch..."
-sudo -u "$CONTAINER_USER" nohup /usr/share/opensearch/bin/opensearch > /var/log/opensearch/startup.log 2>&1 &
+nohup /usr/share/opensearch/bin/opensearch > /var/log/opensearch/startup.log 2>&1 &
 disown
 timeout 90s bash -c 'until curl -s http://localhost:9200; do echo "Waiting for OpenSearch..."; sleep 5; done'
 echo "OpenSearch is ready."
